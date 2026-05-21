@@ -79,13 +79,23 @@ fn extract_all<R: Read>(reader: &mut R, output_norm: &Path) -> Result<u32> {
         }
         let dest = output_norm.join(&path);
 
-        // Recreate dirs and write file
-        if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("Create dir {:?}", parent))?;
+        if kind == MARKER_IMAGE && width > 0 && height > 0 {
+            // De-planarize and save as PNG
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("Create dir {:?}", parent))?;
+            }
+            crate::image::save_planar(&dest, width, height, &entry.data)
+                .with_context(|| format!("Save image {:?}", dest))?;
+        } else {
+            // Video or raw file: write bytes directly
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("Create dir {:?}", parent))?;
+            }
+            fs::write(&dest, &entry.data)
+                .with_context(|| format!("Write {:?}", dest))?;
         }
-        fs::write(&dest, &entry.data)
-            .with_context(|| format!("Write {:?}", dest))?;
 
         count += 1;
         let kind_str = if kind == MARKER_IMAGE { "Image" } else { "File" };
