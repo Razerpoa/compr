@@ -288,3 +288,9 @@ pub fn verify_archive(input: &str) -> Result<()> {
     eprintln!("\nAll {count} entries valid, footer OK");
     Ok(())
 }
+
+pub fn archive_entropy(input: &str) -> Result<()> {
+    let (_header, mut reader) = open_and_decompress(input)?;
+    println!("Archive entropy (per entry):");
+    crate::entropy::print_archive_entropy(&mut reader)
+}

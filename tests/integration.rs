@@ -19,6 +19,19 @@ fn run_pack(src: &Path, dst: &Path) {
     assert!(status.success(), "pack failed");
 }
 
+/// Helper: run `cargo run -- pack ...` with extra flags and assert success.
+fn run_pack_with_args(src: &Path, dst: &Path, extra_args: &[&str]) {
+    let mut args = vec!["run", "--", "pack"];
+    args.extend_from_slice(extra_args);
+    args.push(src.to_str().unwrap());
+    args.push(dst.to_str().unwrap());
+    let status = Command::new("cargo")
+        .args(&args)
+        .status()
+        .unwrap();
+    assert!(status.success(), "pack with args {:?} failed", extra_args);
+}
+
 /// Helper: run `cargo run -- unpack ...` and assert success.
 fn run_unpack(src: &Path, dst: &Path) {
     let status = Command::new("cargo")
@@ -360,4 +373,210 @@ fn test_image_multiple_formats() {
     assert_eq!(image::open(&webp_png).unwrap().to_rgb8().dimensions(), (16, 16));
 
     assert!(dst.path().join("video.mp4").exists());
+}
+
+#[test]
+fn test_compressed_round_trip() {
+    let src = TempDir::new().unwrap();
+    let dst = TempDir::new().unwrap();
+    let archive_dir = TempDir::new().unwrap();
+    let archive = archive_dir.path().join("test.compr");
+
+    write_file(src.path(), "a.mp4", b"hello compressed");
+    write_file(src.path(), "sub/b.mp4", b"nested compressed");
+
+    run_pack(src.path(), &archive);
+    run_unpack(&archive, dst.path());
+
+    assert_eq!(fs::read(dst.path().join("a.mp4")).unwrap(), b"hello compressed");
+    assert_eq!(fs::read(dst.path().join("sub/b.mp4")).unwrap(), b"nested compressed");
+}
+
+#[test]
+fn test_max_flag_round_trip() {
+    let src = TempDir::new().unwrap();
+    let dst = TempDir::new().unwrap();
+    let archive_dir = TempDir::new().unwrap();
+    let archive = archive_dir.path().join("max.compr");
+
+    write_file(src.path(), "f.mp4", b"data for --max test");
+    run_pack_with_args(src.path(), &archive, &["--max"]);
+    run_unpack(&archive, dst.path());
+    assert_eq!(fs::read(dst.path().join("f.mp4")).unwrap(), b"data for --max test");
+}
+
+#[test]
+fn test_mem_flag_round_trip() {
+    let src = TempDir::new().unwrap();
+    let dst = TempDir::new().unwrap();
+    let archive_dir = TempDir::new().unwrap();
+    let archive = archive_dir.path().join("mem.compr");
+
+    write_file(src.path(), "f.mp4", b"data for --mem test");
+    run_pack_with_args(src.path(), &archive, &["--mem", "128"]);
+    run_unpack(&archive, dst.path());
+    assert_eq!(fs::read(dst.path().join("f.mp4")).unwrap(), b"data for --mem test");
+}
+
+#[test]
+fn test_level_flag_round_trip() {
+    let src = TempDir::new().unwrap();
+    let dst = TempDir::new().unwrap();
+    let archive_dir = TempDir::new().unwrap();
+    let archive = archive_dir.path().join("level.compr");
+
+    write_file(src.path(), "f.mp4", b"data for --level test");
+    run_pack_with_args(src.path(), &archive, &["--level", "1"]);
+    run_unpack(&archive, dst.path());
+    assert_eq!(fs::read(dst.path().join("f.mp4")).unwrap(), b"data for --level test");
+}
+
+#[test]
+fn test_verify_compressed_archive() {
+    let src = TempDir::new().unwrap();
+    let archive_dir = TempDir::new().unwrap();
+    let archive = archive_dir.path().join("test.compr");
+
+    write_file(src.path(), "f.mp4", b"verify compressed data");
+    // Pack with --max to ensure ZSTD is active
+    run_pack_with_args(src.path(), &archive, &["--max"]);
+
+    let output = Command::new("cargo")
+        .args(["run", "--", "verify", archive.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "verify should pass on valid compressed archive");
+}
+
+#[test]
+fn test_streaming_pipe_compressed() {
+    let src = TempDir::new().unwrap();
+    let dst = TempDir::new().unwrap();
+
+    let mut img = image::RgbImage::new(4, 4);
+    img.put_pixel(0, 0, image::Rgb([128, 64, 32]));
+    img.save(src.path().join("pipe.png")).unwrap();
+    write_file(src.path(), "pipe.mp4", b"pipe data");
+
+    // Pack to stdout (compressed by default)
+    let mut pack = Command::new("cargo")
+        .args(["run", "--", "pack", src.path().to_str().unwrap(), "-"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+
+    // Unpack from stdin (auto-detect compression)
+    let unpack = Command::new("cargo")
+        .args(["run", "--", "unpack", "-", dst.path().to_str().unwrap()])
+        .stdin(pack.stdout.take().unwrap())
+        .status()
+        .unwrap();
+    assert!(unpack.success(), "streaming compressed unpack failed");
+
+    let restored = image::open(dst.path().join("pipe.png")).unwrap().to_rgb8();
+    assert_eq!(restored.get_pixel(0, 0), &image::Rgb([128, 64, 32]));
+    assert_eq!(fs::read(dst.path().join("pipe.mp4")).unwrap(), b"pipe data");
+}
+
+#[test]
+fn test_entropy_command() {
+    let src = TempDir::new().unwrap();
+    let archive_dir = TempDir::new().unwrap();
+    let archive = archive_dir.path().join("test.compr");
+
+    write_file(src.path(), "f.mp4", b"AAAAAAAAAAAAAAAA"); // 0 entropy
+    run_pack(src.path(), &archive);
+
+    let output = Command::new("cargo")
+        .args(["run", "--", "entropy", archive.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("f.mp4"));
+    assert!(stdout.contains("bits/byte"));
+}
+
+#[test]
+fn test_empty_file() {
+    let src = TempDir::new().unwrap();
+    let dst = TempDir::new().unwrap();
+    let archive_dir = TempDir::new().unwrap();
+    let archive = archive_dir.path().join("test.compr");
+
+    write_file(src.path(), "empty.mp4", b"");
+    run_pack(src.path(), &archive);
+    run_unpack(&archive, dst.path());
+    assert_eq!(fs::read(dst.path().join("empty.mp4")).unwrap(), b"");
+}
+
+#[test]
+fn test_single_file() {
+    let src = TempDir::new().unwrap();
+    let dst = TempDir::new().unwrap();
+    let archive_dir = TempDir::new().unwrap();
+    let archive = archive_dir.path().join("test.compr");
+
+    write_file(src.path(), "solo.mp4", b"just me");
+    run_pack(src.path(), &archive);
+    run_unpack(&archive, dst.path());
+    assert_eq!(fs::read(dst.path().join("solo.mp4")).unwrap(), b"just me");
+}
+
+#[test]
+fn test_deeply_nested_paths() {
+    let src = TempDir::new().unwrap();
+    let dst = TempDir::new().unwrap();
+    let archive_dir = TempDir::new().unwrap();
+    let archive = archive_dir.path().join("test.compr");
+
+    let deep = (0..10).map(|_| "a").collect::<Vec<_>>().join("/");
+    write_file(src.path(), &format!("{deep}/deep.mp4"), b"deep file");
+    run_pack(src.path(), &archive);
+    run_unpack(&archive, dst.path());
+    assert_eq!(
+        fs::read(dst.path().join(&format!("{deep}/deep.mp4"))).unwrap(),
+        b"deep file"
+    );
+}
+
+#[test]
+fn test_unicode_path() {
+    let src = TempDir::new().unwrap();
+    let dst = TempDir::new().unwrap();
+    let archive_dir = TempDir::new().unwrap();
+    let archive = archive_dir.path().join("test.compr");
+
+    write_file(src.path(), "文件夹/文件.mp4", b"unicode");
+    run_pack(src.path(), &archive);
+    run_unpack(&archive, dst.path());
+    assert_eq!(fs::read(dst.path().join("文件夹/文件.mp4")).unwrap(), b"unicode");
+}
+
+#[test]
+fn test_image_round_trip_compressed_max() {
+    let src = TempDir::new().unwrap();
+    let dst = TempDir::new().unwrap();
+    let archive_dir = TempDir::new().unwrap();
+    let archive = archive_dir.path().join("test.compr");
+
+    let mut img = image::RgbImage::new(8, 8);
+    for y in 0..8 {
+        for x in 0..8 {
+            img.put_pixel(x, y, image::Rgb([(x * 32) as u8, (y * 32) as u8, 100]));
+        }
+    }
+    img.save(src.path().join("img.png")).unwrap();
+
+    run_pack_with_args(src.path(), &archive, &["--max"]);
+    run_unpack(&archive, dst.path());
+
+    let loaded = image::open(dst.path().join("img.png")).unwrap().to_rgb8();
+    assert_eq!(loaded.dimensions(), (8, 8));
+    for y in 0..8 {
+        for x in 0..8 {
+            assert_eq!(loaded.get_pixel(x, y), &image::Rgb([(x * 32) as u8, (y * 32) as u8, 100]));
+        }
+    }
 }

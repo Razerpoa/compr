@@ -7,8 +7,8 @@ pub const DEFAULT_LEVEL: i32 = 19;
 /// Default window log: 256 MiB = 2^28
 pub const DEFAULT_WINDOW_LOG: u32 = 28;
 
-/// Max-mode window log: 2 GiB = 2^31
-pub const MAX_WINDOW_LOG: u32 = 31;
+/// Max-mode window log: 1 GiB = 2^30 (2^31=2 GiB may exceed system limits)
+pub const MAX_WINDOW_LOG: u32 = 30;
 
 /// Eco-mode window log: 128 MiB = 2^27
 pub const ECO_WINDOW_LOG: u32 = 27;
@@ -92,9 +92,16 @@ pub fn create_compressor<W: Write + 'static>(
 }
 
 /// Create a ZSTD-decompressing reader from an inner reader.
+///
+/// Sets `window_log_max` to MAX_WINDOW_LOG so archives compressed with
+/// large windows (e.g. `--max`) can be decompressed without hitting the
+/// default safe memory limit.
 pub fn create_decompressor<R: Read + 'static>(
     inner: R,
 ) -> Result<Box<dyn Read>> {
-    let dec = zstd::stream::read::Decoder::new(inner)?;
+    let mut dec = zstd::stream::read::Decoder::new(inner)?;
+    // Allow up to 2 GiB window (matches MAX_WINDOW_LOG from --max).
+    // The decoder's own safety limit is more restrictive by default.
+    dec.window_log_max(31)?;
     Ok(Box::new(dec))
 }

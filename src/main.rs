@@ -40,6 +40,8 @@ enum Commands {
     Info { archive: String },
     /// Verify all CRC32 checksums
     Verify { archive: String },
+    /// Show Shannon entropy for each entry in an archive
+    Entropy { archive: String },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -62,6 +64,7 @@ fn main() -> anyhow::Result<()> {
         Commands::List { archive } => unpacker::list_entries(&archive)?,
         Commands::Info { archive } => unpacker::archive_info(&archive)?,
         Commands::Verify { archive } => unpacker::verify_archive(&archive)?,
+        Commands::Entropy { archive } => unpacker::archive_entropy(&archive)?,
     }
     Ok(())
 }
