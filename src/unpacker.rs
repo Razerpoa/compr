@@ -2,7 +2,8 @@ use std::fs;
 use std::io::{self, BufReader, Read};
 use std::path::Path;
 use anyhow::{Context, Result};
-use crate::format::{ArchiveHeader, Entry, FOOTER_MARKER, MAGIC, MARKER_IMAGE, MARKER_VIDEO, is_path_traversal};
+use crate::compress;
+use crate::format::{ArchiveHeader, Entry, FLAG_ZSTD, FOOTER_MARKER, MAGIC, MARKER_IMAGE, MARKER_VIDEO, is_path_traversal};
 
 fn open_input(input: &str) -> Result<Box<dyn Read>> {
     if input == "-" {
@@ -12,6 +13,23 @@ fn open_input(input: &str) -> Result<Box<dyn Read>> {
             fs::File::open(input).with_context(|| format!("Open '{}'", input))?
         )))
     }
+}
+
+/// Open input, read header, and wrap the payload stream with a ZSTD decompressor if needed.
+/// Returns (header, decompressed_reader).
+fn open_and_decompress(input: &str) -> Result<(ArchiveHeader, Box<dyn Read>)> {
+    let reader = open_input(input)?;
+    let mut pb_reader = BufReader::new(reader);
+    let header = ArchiveHeader::read(&mut pb_reader)
+        .context("Invalid archive header")?;
+
+    let payload_reader: Box<dyn Read> = if header.flags & FLAG_ZSTD != 0 {
+        compress::create_decompressor(pb_reader)?
+    } else {
+        Box::new(pb_reader)
+    };
+
+    Ok((header, payload_reader))
 }
 
 /// Read entries sequentially until FOOTER_MARKER, then validate footer.
@@ -127,10 +145,7 @@ fn extract_all<R: Read>(reader: &mut R, output_norm: &Path) -> Result<u32> {
 }
 
 pub fn unpack(input: &str, output_dir: &str) -> Result<()> {
-    let mut reader = open_input(input)?;
-
-    let _header = ArchiveHeader::read(&mut reader)
-        .context("Invalid archive header")?;
+    let (_header, mut reader) = open_and_decompress(input)?;
 
     let output_path = Path::new(output_dir);
     fs::create_dir_all(output_path)
@@ -144,8 +159,7 @@ pub fn unpack(input: &str, output_dir: &str) -> Result<()> {
 }
 
 pub fn list_entries(input: &str) -> Result<()> {
-    let mut reader = open_input(input)?;
-    let _header = ArchiveHeader::read(&mut reader)?;
+    let (_header, mut reader) = open_and_decompress(input)?;
 
     let mut count = 0u32;
     loop {
@@ -186,8 +200,7 @@ pub fn list_entries(input: &str) -> Result<()> {
 }
 
 pub fn archive_info(input: &str) -> Result<()> {
-    let mut reader = open_input(input)?;
-    let _header = ArchiveHeader::read(&mut reader)?;
+    let (_header, mut reader) = open_and_decompress(input)?;
     // Scan to the footer to get the official entry count
     loop {
         let mut kind = [0u8; 1];
@@ -226,8 +239,7 @@ pub fn archive_info(input: &str) -> Result<()> {
 }
 
 pub fn verify_archive(input: &str) -> Result<()> {
-    let mut reader = open_input(input)?;
-    let _header = ArchiveHeader::read(&mut reader)?;
+    let (_header, mut reader) = open_and_decompress(input)?;
     let mut count = 0u32;
     loop {
         let mut kind = [0u8; 1];

@@ -4,16 +4,17 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use walkdir::WalkDir;
 use crate::classify::{classify, EntryKind};
-use crate::format::{ArchiveFooter, ArchiveHeader, Entry, MAGIC, MARKER_IMAGE, MARKER_VIDEO, VERSION};
+use crate::compress::{self, CompressParams};
+use crate::format::{ArchiveFooter, ArchiveHeader, Entry, FLAG_ZSTD, MAGIC, MARKER_IMAGE, MARKER_VIDEO, VERSION};
 use crate::image;
 
-pub fn pack(input_dir: &str, output: &str) -> Result<()> {
+pub fn pack(input_dir: &str, output: &str, params: &CompressParams) -> Result<()> {
     let input_path = Path::new(input_dir);
     if !input_path.is_dir() {
         anyhow::bail!("Error: '{}' is not a valid directory", input_dir);
     }
 
-    let mut writer: Box<dyn Write> = if output == "-" {
+    let mut raw_writer: Box<dyn Write> = if output == "-" {
         Box::new(BufWriter::new(io::stdout().lock()))
     } else {
         Box::new(BufWriter::new(
@@ -21,8 +22,12 @@ pub fn pack(input_dir: &str, output: &str) -> Result<()> {
         ))
     };
 
-    ArchiveHeader { magic: *MAGIC, version: VERSION, flags: 0 }
-        .write(&mut writer)?;
+    // Write header (always uncompressed so readers can detect compression flag)
+    ArchiveHeader { magic: *MAGIC, version: VERSION, flags: FLAG_ZSTD }
+        .write(&mut raw_writer)?;
+
+    // Wrap with ZSTD compressor — entries + footer will be compressed
+    let mut writer = compress::create_compressor(raw_writer, params)?;
 
     // Collect all entries, classify, then sort for folder-grouped ordering.
     // Sort order: parent directory → image before video → filename.

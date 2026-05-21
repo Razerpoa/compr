@@ -1,6 +1,8 @@
-use clap::{Parser, Subcommand};
+use clap::Parser;
+use clap::Subcommand;
 
 mod classify;
+mod compress;
 mod entropy;
 mod format;
 mod image;
@@ -17,7 +19,19 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Pack a directory into a compr archive
-    Pack { input_dir: String, output: String },
+    Pack {
+        input_dir: String,
+        output: String,
+        /// Enable max compression (--ultra, --long=31, all cores, no memory cap)
+        #[arg(long)]
+        max: bool,
+        /// Memory budget in MB for compression (overrides default ~512 MB cap)
+        #[arg(long)]
+        mem: Option<u32>,
+        /// ZSTD compression level (1-22, default 19)
+        #[arg(long)]
+        level: Option<i32>,
+    },
     /// Unpack a compr archive into a directory
     Unpack { input: String, output_dir: String },
     /// List entries in a compr archive
@@ -31,7 +45,19 @@ enum Commands {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Pack { input_dir, output } => packer::pack(&input_dir, &output)?,
+        Commands::Pack { input_dir, output, max, mem, level } => {
+            let mut params = if max {
+                compress::CompressParams::max()
+            } else if let Some(mb) = mem {
+                compress::CompressParams::eco(mb)
+            } else {
+                compress::CompressParams::default()
+            };
+            if let Some(lvl) = level {
+                params.level = lvl;
+            }
+            packer::pack(&input_dir, &output, &params)?
+        }
         Commands::Unpack { input, output_dir } => unpacker::unpack(&input, &output_dir)?,
         Commands::List { archive } => unpacker::list_entries(&archive)?,
         Commands::Info { archive } => unpacker::archive_info(&archive)?,

@@ -6,6 +6,7 @@ pub const VERSION: u16 = 0x0001;
 pub const MARKER_IMAGE: u8 = 0x01;
 pub const MARKER_VIDEO: u8 = 0x02;
 pub const FOOTER_MARKER: u8 = 0xFF; // unambiguous vs 0x01/0x02
+pub const FLAG_ZSTD: u16 = 0x0001; // archive payload is ZSTD-compressed
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArchiveHeader {
