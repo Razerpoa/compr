@@ -1,0 +1,15 @@
+[package]
+name = "compr"
+version = "0.1.0"
+edition = "2021"
+description = "Streaming solid archive compression for images and videos"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+walkdir = "2"
+crc32fast = "1"
+anyhow = "1"
+thiserror = "1"
+
+[dev-dependencies]
+tempfile = "3"

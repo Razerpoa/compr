@@ -11,3 +11,7 @@ wheels/
 
 *.compressed
 .hive/
+
+# Added by cargo
+
+/target
