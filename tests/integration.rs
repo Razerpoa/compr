@@ -35,14 +35,14 @@ fn test_flat_round_trip() {
     let archive_dir = TempDir::new().unwrap();
     let archive = archive_dir.path().join("test.compr");
 
-    write_file(src.path(), "a.txt", b"hello");
-    write_file(src.path(), "b.txt", b"world");
+    write_file(src.path(), "a.mp4", b"hello");
+    write_file(src.path(), "b.mp4", b"world");
 
     run_pack(src.path(), &archive);
     run_unpack(&archive, dst.path());
 
-    assert_eq!(fs::read(dst.path().join("a.txt")).unwrap(), b"hello");
-    assert_eq!(fs::read(dst.path().join("b.txt")).unwrap(), b"world");
+    assert_eq!(fs::read(dst.path().join("a.mp4")).unwrap(), b"hello");
+    assert_eq!(fs::read(dst.path().join("b.mp4")).unwrap(), b"world");
 }
 
 #[test]
@@ -52,16 +52,16 @@ fn test_nested_round_trip() {
     let archive_dir = TempDir::new().unwrap();
     let archive = archive_dir.path().join("test.compr");
 
-    write_file(src.path(), "root.txt", b"root");
-    write_file(src.path(), "sub1/nested.txt", b"nested");
-    write_file(src.path(), "sub1/sub2/deep.txt", b"deep");
+    write_file(src.path(), "root.mp4", b"root");
+    write_file(src.path(), "sub1/nested.mp4", b"nested");
+    write_file(src.path(), "sub1/sub2/deep.mp4", b"deep");
 
     run_pack(src.path(), &archive);
     run_unpack(&archive, dst.path());
 
-    assert_eq!(fs::read(dst.path().join("root.txt")).unwrap(), b"root");
-    assert_eq!(fs::read(dst.path().join("sub1/nested.txt")).unwrap(), b"nested");
-    assert_eq!(fs::read(dst.path().join("sub1/sub2/deep.txt")).unwrap(), b"deep");
+    assert_eq!(fs::read(dst.path().join("root.mp4")).unwrap(), b"root");
+    assert_eq!(fs::read(dst.path().join("sub1/nested.mp4")).unwrap(), b"nested");
+    assert_eq!(fs::read(dst.path().join("sub1/sub2/deep.mp4")).unwrap(), b"deep");
 }
 
 #[test]
@@ -72,12 +72,12 @@ fn test_large_file_round_trip() {
     let archive = archive_dir.path().join("test.compr");
 
     let large_data = (0..65536).map(|i| (i % 256) as u8).collect::<Vec<_>>();
-    write_file(src.path(), "large.bin", &large_data);
+    write_file(src.path(), "large.mp4", &large_data);
 
     run_pack(src.path(), &archive);
     run_unpack(&archive, dst.path());
 
-    assert_eq!(fs::read(dst.path().join("large.bin")).unwrap(), large_data);
+    assert_eq!(fs::read(dst.path().join("large.mp4")).unwrap(), large_data);
 }
 
 #[test]
@@ -120,8 +120,8 @@ fn test_list_output() {
     let archive_dir = TempDir::new().unwrap();
     let archive = archive_dir.path().join("test.compr");
 
-    write_file(src.path(), "a.txt", b"hello");
-    write_file(src.path(), "sub/b.txt", b"world");
+    write_file(src.path(), "a.mp4", b"hello");
+    write_file(src.path(), "sub/b.mp4", b"world");
 
     run_pack(src.path(), &archive);
 
@@ -131,8 +131,8 @@ fn test_list_output() {
         .unwrap();
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("a.txt"));
-    assert!(stdout.contains("sub/b.txt"));
+    assert!(stdout.contains("a.mp4"));
+    assert!(stdout.contains("sub/b.mp4"));
 }
 
 #[test]
@@ -141,7 +141,7 @@ fn test_verify_valid() {
     let archive_dir = TempDir::new().unwrap();
     let archive = archive_dir.path().join("test.compr");
 
-    write_file(src.path(), "f.txt", b"data");
+    write_file(src.path(), "f.mp4", b"data");
     run_pack(src.path(), &archive);
 
     let output = Command::new("cargo")
@@ -157,12 +157,12 @@ fn test_verify_corrupted() {
     let archive_dir = TempDir::new().unwrap();
     let archive = archive_dir.path().join("test.compr");
 
-    write_file(src.path(), "f.txt", b"data");
+    write_file(src.path(), "f.mp4", b"data");
     run_pack(src.path(), &archive);
 
     // Corrupt a byte in the archive's first payload
     let mut data = fs::read(&archive).unwrap();
-    // Packed format: header(8) + entry: kind(1) + path_len(2) + path("f.txt"=5) + w(4) + h(4) + ds(8) + crc(4)
+    // Packed format: header(8) + entry: kind(1) + path_len(2) + path("f.mp4"=5) + w(4) + h(4) + ds(8) + crc(4)
     // Payload starts at byte 8 + 1 + 2 + 5 + 4 + 4 + 8 + 4 = 36. Corrupt byte 40 (5th byte of payload).
     let payload_offset = 8 + 1 + 2 + 5 + 4 + 4 + 8 + 4;
     data[payload_offset + 4] ^= 0xFF;
@@ -217,8 +217,8 @@ fn test_streaming_pipe_round_trip() {
     let src = TempDir::new().unwrap();
     let dst = TempDir::new().unwrap();
 
-    write_file(src.path(), "a.txt", b"hello pipe");
-    write_file(src.path(), "sub/b.txt", b"nested pipe");
+    write_file(src.path(), "a.mp4", b"hello pipe");
+    write_file(src.path(), "sub/b.mp4", b"nested pipe");
 
     // Pack to stdout
     let mut pack = Command::new("cargo")
@@ -236,8 +236,8 @@ fn test_streaming_pipe_round_trip() {
         .unwrap();
     assert!(unpack.success(), "streaming unpack failed");
 
-    assert_eq!(fs::read(dst.path().join("a.txt")).unwrap(), b"hello pipe");
-    assert_eq!(fs::read(dst.path().join("sub/b.txt")).unwrap(), b"nested pipe");
+    assert_eq!(fs::read(dst.path().join("a.mp4")).unwrap(), b"hello pipe");
+    assert_eq!(fs::read(dst.path().join("sub/b.mp4")).unwrap(), b"nested pipe");
 }
 
 #[test]
