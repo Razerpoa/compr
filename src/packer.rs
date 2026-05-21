@@ -8,6 +8,23 @@ use crate::compress::{self, CompressParams};
 use crate::format::{ArchiveFooter, ArchiveHeader, Entry, FLAG_ZSTD, MAGIC, MARKER_IMAGE, MARKER_VIDEO, VERSION};
 use crate::image;
 
+/// Format byte count as human-readable string (bytes, KB, MB, GB).
+fn human_bytes(n: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    let nf = n as f64;
+    if nf >= GB {
+        format!("{:.1} GB", nf / GB)
+    } else if nf >= MB {
+        format!("{:.1} MB", nf / MB)
+    } else if nf >= KB {
+        format!("{:.1} KB", nf / KB)
+    } else {
+        format!("{} bytes", n)
+    }
+}
+
 pub fn pack(input_dir: &str, output: &str, params: &CompressParams) -> Result<()> {
     let input_path = Path::new(input_dir);
     if !input_path.is_dir() {
@@ -140,10 +157,10 @@ pub fn pack(input_dir: &str, output: &str, params: &CompressParams) -> Result<()
         } else {
             0.0
         };
-        eprintln!("\nDone: {} entries | raw: {} bytes → archive: {} bytes ({:.1}%)",
-            entry_count, raw_input_bytes, compressed_size, ratio);
+        eprintln!("\nDone: {} entries | raw: {} → archive: {} ({:.1}%)",
+            entry_count, human_bytes(raw_input_bytes), human_bytes(compressed_size), ratio);
     } else {
-        eprintln!("\nDone: {} entries, {} bytes raw (stdout stream)", entry_count, raw_input_bytes);
+        eprintln!("\nDone: {} entries, {} raw (stdout stream)", entry_count, human_bytes(raw_input_bytes));
     }
     Ok(())
 }
