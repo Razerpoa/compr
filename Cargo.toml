@@ -10,6 +10,7 @@ walkdir = "2"
 crc32fast = "1"
 anyhow = "1"
 thiserror = "1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff"] }
 
 [dev-dependencies]
 tempfile = "3"
