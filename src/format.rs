@@ -16,8 +16,6 @@ pub struct ArchiveHeader {
 }
 
 impl ArchiveHeader {
-    pub const SERIALIZED_SIZE: usize = 8;
-
     pub fn write<W: Write>(&self, w: &mut W) -> Result<(), FormatError> {
         w.write_all(&self.magic)?;
         w.write_all(&self.version.to_le_bytes())?;
@@ -84,6 +82,8 @@ impl Entry {
         Ok(t)
     }
 
+    /// Read an entry from a stream. Used in unit tests for round-trip verification.
+    #[allow(dead_code)]
     pub fn read<R: Read>(r: &mut R) -> Result<Self, FormatError> {
         let mut buf = [0u8; 1];
         r.read_exact(&mut buf)?;
@@ -126,8 +126,6 @@ pub struct ArchiveFooter {
 }
 
 impl ArchiveFooter {
-    pub const SERIALIZED_SIZE: usize = 13; // marker(1) + count(4) + crc(4) + magic(4)
-
     pub fn write<W: Write>(&self, w: &mut W) -> Result<(), FormatError> {
         w.write_all(&[FOOTER_MARKER])?;
         w.write_all(&self.entry_count.to_le_bytes())?;
@@ -136,6 +134,8 @@ impl ArchiveFooter {
         Ok(())
     }
 
+    /// Read footer from a stream. Used in unit tests for round-trip verification.
+    #[allow(dead_code)]
     pub fn read<R: Read>(r: &mut R) -> Result<Self, FormatError> {
         let mut b = [0u8; 1];
         r.read_exact(&mut b)?;
@@ -162,12 +162,12 @@ impl ArchiveFooter {
 #[derive(Error, Debug)]
 pub enum FormatError {
     #[error("Invalid magic: {0:?}")] InvalidMagic([u8; 4]),
-    #[error("Unknown entry kind: {0}")] UnknownKind(u8),
-    #[error("Expected footer marker 0xFF, got {got}")] ExpectedFooter { got: u8 },
-    #[error("CRC32 mismatch: expected {expected:#x}, computed {computed:#x}")] CrcMismatch { expected: u32, computed: u32 },
-    #[error("Invalid UTF-8 path")] InvalidPath,
-    #[error("Path too long: {0} bytes (max 65535)")] PathTooLong(usize),
-    #[error("Data too large: {0} bytes (max u64)")] DataTooLarge(usize),
+    #[allow(dead_code)] #[error("Unknown entry kind: {0}")] UnknownKind(u8),
+    #[allow(dead_code)] #[error("Expected footer marker 0xFF, got {got}")] ExpectedFooter { got: u8 },
+    #[allow(dead_code)] #[error("CRC32 mismatch: expected {expected:#x}, computed {computed:#x}")] CrcMismatch { expected: u32, computed: u32 },
+    #[allow(dead_code)] #[error("Invalid UTF-8 path")] InvalidPath,
+    #[allow(dead_code)] #[error("Path too long: {0} bytes (max 65535)")] PathTooLong(usize),
+    #[allow(dead_code)] #[error("Data too large: {0} bytes (max u64)")] DataTooLarge(usize),
     #[error("IO: {0}")] Io(#[from] std::io::Error),
 }
 
