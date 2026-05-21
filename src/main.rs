@@ -4,6 +4,7 @@ use clap::Subcommand;
 mod classify;
 mod compress;
 mod entropy;
+mod filter;
 mod format;
 mod image;
 mod packer;
