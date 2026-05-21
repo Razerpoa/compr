@@ -239,3 +239,125 @@ fn test_streaming_pipe_round_trip() {
     assert_eq!(fs::read(dst.path().join("a.txt")).unwrap(), b"hello pipe");
     assert_eq!(fs::read(dst.path().join("sub/b.txt")).unwrap(), b"nested pipe");
 }
+
+#[test]
+fn test_image_round_trip() {
+    let src = TempDir::new().unwrap();
+    let dst = TempDir::new().unwrap();
+    let archive_dir = TempDir::new().unwrap();
+    let archive = archive_dir.path().join("test.compr");
+
+    let mut img = image::RgbImage::new(4, 4);
+    for y in 0..4 {
+        for x in 0..4 {
+            img.put_pixel(x, y, image::Rgb([(x * 64) as u8, (y * 64) as u8, 128]));
+        }
+    }
+    img.save(src.path().join("pattern.png")).unwrap();
+
+    run_pack(src.path(), &archive);
+    run_unpack(&archive, dst.path());
+
+    let unpacked = dst.path().join("pattern.png");
+    assert!(unpacked.exists(), "unpacked PNG should exist");
+
+    let loaded = image::open(&unpacked).unwrap().to_rgb8();
+    assert_eq!(loaded.width(), 4);
+    assert_eq!(loaded.height(), 4);
+    for y in 0..4 {
+        for x in 0..4 {
+            assert_eq!(
+                loaded.get_pixel(x, y),
+                &image::Rgb([(x * 64) as u8, (y * 64) as u8, 128]),
+                "Pixel mismatch at ({x},{y})"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_mixed_content_ordering() {
+    let src = TempDir::new().unwrap();
+    let dst = TempDir::new().unwrap();
+    let archive_dir = TempDir::new().unwrap();
+    let archive = archive_dir.path().join("test.compr");
+
+    let img1 = image::RgbImage::new(1, 1);
+    img1.save(src.path().join("image1.png")).unwrap();
+    let img2 = image::RgbImage::new(2, 2);
+    img2.save(src.path().join("image2.jpg")).unwrap();
+
+    fs::write(src.path().join("video.mp4"), b"video data").unwrap();
+    fs::write(src.path().join("video2.avi"), b"more video").unwrap();
+    fs::write(src.path().join("notes.txt"), b"skip me").unwrap();
+
+    run_pack(src.path(), &archive);
+
+    let output = Command::new("cargo")
+        .args(["run", "--", "list", archive.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let pos_png = stdout.find("image1.png").unwrap();
+    let pos_jpg = stdout.find("image2.jpg").unwrap();
+    let pos_mp4 = stdout.find("video.mp4").unwrap();
+    let pos_avi = stdout.find("video2.avi").unwrap();
+
+    assert!(pos_png < pos_mp4, "image1.png should appear before video.mp4");
+    assert!(pos_jpg < pos_mp4, "image2.jpg should appear before video.mp4");
+    assert!(pos_png < pos_avi, "image1.png should appear before video2.avi");
+    assert!(pos_jpg < pos_avi, "image2.jpg should appear before video2.avi");
+    assert!(!stdout.contains("notes.txt"), "notes.txt should be skipped");
+
+    run_unpack(&archive, dst.path());
+
+    assert!(dst.path().join("image1.png").exists());
+    assert!(dst.path().join("image2.png").exists(), "image2.jpg unpacks as image2.png");
+    assert!(dst.path().join("video.mp4").exists());
+    assert!(dst.path().join("video2.avi").exists());
+    assert!(!dst.path().join("notes.txt").exists(), "notes.txt should not be unpacked");
+}
+
+#[test]
+fn test_image_multiple_formats() {
+    let src = TempDir::new().unwrap();
+    let dst = TempDir::new().unwrap();
+    let archive_dir = TempDir::new().unwrap();
+    let archive = archive_dir.path().join("test.compr");
+
+    let mut a = image::RgbImage::new(4, 4);
+    a.put_pixel(0, 0, image::Rgb([255, 0, 0]));
+    a.put_pixel(3, 3, image::Rgb([0, 255, 0]));
+    a.save(src.path().join("a.png")).unwrap();
+
+    let mut b = image::RgbImage::new(8, 8);
+    b.put_pixel(0, 0, image::Rgb([0, 0, 255]));
+    b.put_pixel(7, 7, image::Rgb([255, 255, 0]));
+    b.save(src.path().join("b.jpg")).unwrap();
+
+    let mut c = image::RgbImage::new(16, 16);
+    c.put_pixel(0, 0, image::Rgb([128, 128, 0]));
+    c.put_pixel(15, 15, image::Rgb([0, 128, 128]));
+    c.save(src.path().join("c.webp")).unwrap();
+
+    fs::write(src.path().join("video.mp4"), b"raw video bytes").unwrap();
+
+    run_pack(src.path(), &archive);
+    run_unpack(&archive, dst.path());
+
+    let png = dst.path().join("a.png");
+    assert!(png.exists());
+    assert_eq!(image::open(&png).unwrap().to_rgb8().dimensions(), (4, 4));
+
+    let jpg_png = dst.path().join("b.png");
+    assert!(jpg_png.exists());
+    assert_eq!(image::open(&jpg_png).unwrap().to_rgb8().dimensions(), (8, 8));
+
+    let webp_png = dst.path().join("c.png");
+    assert!(webp_png.exists());
+    assert_eq!(image::open(&webp_png).unwrap().to_rgb8().dimensions(), (16, 16));
+
+    assert!(dst.path().join("video.mp4").exists());
+}
