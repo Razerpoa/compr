@@ -26,9 +26,9 @@ enum Commands {
         /// Enable max compression (--ultra, --long=31, all cores, no memory cap)
         #[arg(long)]
         max: bool,
-        /// Memory budget in MB for compression (overrides default ~512 MB cap)
+        /// Memory budget for compression (e.g. 512, 1G, 256M)
         #[arg(long)]
-        mem: Option<u32>,
+        mem: Option<String>,
         /// ZSTD compression level (1-22, default 19)
         #[arg(long)]
         level: Option<i32>,
@@ -45,13 +45,36 @@ enum Commands {
     Entropy { archive: String },
 }
 
+fn parse_mem_budget(s: &str) -> Result<u32, String> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Err("empty memory budget".to_string());
+    }
+    let suffix = s.chars().last().unwrap();
+    if suffix.is_alphabetic() {
+        let num_part = s[..s.len() - 1].trim();
+        let val: f64 = num_part.parse().map_err(|_| format!("invalid number: {}", num_part))?;
+        match suffix {
+            'g' | 'G' => Ok((val * 1024.0) as u32),
+            'm' | 'M' => Ok(val as u32),
+            'k' | 'K' => Ok((val / 1024.0) as u32),
+            _ => Err(format!("unknown suffix: '{}'", suffix)),
+        }
+    } else {
+        let val: u32 = s.parse().map_err(|_| format!("invalid number: {}", s))?;
+        Ok(val)
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Pack { input_dir, output, max, mem, level } => {
             let mut params = if max {
                 compress::CompressParams::max()
-            } else if let Some(mb) = mem {
+            } else if let Some(mem_str) = mem {
+                let mb = parse_mem_budget(&mem_str)
+                    .map_err(|e| anyhow::anyhow!("Invalid --mem value: {}", e))?;
                 compress::CompressParams::eco(mb)
             } else {
                 compress::CompressParams::default()
@@ -68,4 +91,21 @@ fn main() -> anyhow::Result<()> {
         Commands::Entropy { archive } => unpacker::archive_entropy(&archive)?,
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_mem_budget() {
+        assert_eq!(parse_mem_budget("512").unwrap(), 512);
+        assert_eq!(parse_mem_budget("1G").unwrap(), 1024);
+        assert_eq!(parse_mem_budget("2g").unwrap(), 2048);
+        assert_eq!(parse_mem_budget("256M").unwrap(), 256);
+        assert_eq!(parse_mem_budget("128m").unwrap(), 128);
+        assert_eq!(parse_mem_budget("1.5G").unwrap(), 1536);
+        assert!(parse_mem_budget("abc").is_err());
+        assert!(parse_mem_budget("1.5X").is_err());
+    }
 }

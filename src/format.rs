@@ -2,7 +2,7 @@ use std::io::{Read, Write};
 use thiserror::Error;
 
 pub const MAGIC: &[u8; 4] = b"CMPR";
-pub const VERSION: u16 = 0x0001;
+pub const VERSION: u16 = 0x0002;
 pub const MARKER_IMAGE: u8 = 0x01;
 pub const MARKER_VIDEO: u8 = 0x02;
 pub const FOOTER_MARKER: u8 = 0xFF; // unambiguous vs 0x01/0x02
@@ -42,6 +42,7 @@ pub struct Entry {
     pub path: String,
     pub width: u32,
     pub height: u32,
+    pub filter_type: u8,
     pub data: Vec<u8>,
 }
 
@@ -61,6 +62,7 @@ impl Entry {
         h.update(p);
         h.update(&self.width.to_le_bytes());
         h.update(&self.height.to_le_bytes());
+        h.update(&[self.filter_type]);
         h.update(&data_len.to_le_bytes());
         h.update(&self.data);
         Ok(h.finalize())
@@ -76,6 +78,7 @@ impl Entry {
         w.write_all(p)?; t += p.len() as u64;
         w.write_all(&self.width.to_le_bytes())?; t += 4;
         w.write_all(&self.height.to_le_bytes())?; t += 4;
+        w.write_all(&[self.filter_type])?; t += 1;
         w.write_all(&(self.data.len() as u64).to_le_bytes())?; t += 8;
         w.write_all(&crc.to_le_bytes())?; t += 4;
         w.write_all(&self.data)?; t += self.data.len() as u64;
@@ -100,12 +103,14 @@ impl Entry {
         let mut b4 = [0u8; 4];
         r.read_exact(&mut b4)?; let w = u32::from_le_bytes(b4);
         r.read_exact(&mut b4)?; let h = u32::from_le_bytes(b4);
+        let mut b1 = [0u8; 1];
+        r.read_exact(&mut b1)?; let filter_type = b1[0];
         let mut b8 = [0u8; 8];
         r.read_exact(&mut b8)?; let ds = u64::from_le_bytes(b8) as usize;
         r.read_exact(&mut b4)?; let sc = u32::from_le_bytes(b4);
         let mut data = vec![0u8; ds];
         r.read_exact(&mut data)?;
-        let entry = Entry { kind, path, width: w, height: h, data };
+        let entry = Entry { kind, path, width: w, height: h, filter_type, data };
         let cc = entry.calculate_crc32()?;
         if sc != cc { return Err(FormatError::CrcMismatch { expected: sc, computed: cc }); }
         Ok(entry)
@@ -186,13 +191,13 @@ mod tests {
     }
 
     #[test] fn entry_rt() {
-        let e = Entry { kind: MARKER_VIDEO, path: "a/b.mp4".into(), width: 0, height: 0, data: vec![1,2,3] };
+        let e = Entry { kind: MARKER_VIDEO, path: "a/b.mp4".into(), width: 0, height: 0, filter_type: 0, data: vec![1,2,3] };
         let mut b = Vec::new(); e.write(&mut b).unwrap();
         assert_eq!(Entry::read(&mut b.as_slice()).unwrap(), e);
     }
 
     #[test] fn entry_crc() {
-        let e = Entry { kind: MARKER_VIDEO, path: "x.bin".into(), width: 0, height: 0, data: vec![0xAB; 100] };
+        let e = Entry { kind: MARKER_VIDEO, path: "x.bin".into(), width: 0, height: 0, filter_type: 0, data: vec![0xAB; 100] };
         let mut b = Vec::new(); e.write(&mut b).unwrap();
         // Corrupt the last payload byte
         let payload_end = b.len();

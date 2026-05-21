@@ -198,7 +198,7 @@ fn test_path_traversal_rejected() {
     let mut data = Vec::new();
     // Header: magic(4) + version(2) + flags(2)
     data.extend_from_slice(b"CMPR");
-    data.extend_from_slice(&1u16.to_le_bytes());
+    data.extend_from_slice(&2u16.to_le_bytes());
     data.extend_from_slice(&0u16.to_le_bytes());
     // Entry: kind=VIDEO(0x02), path="../../etc/pwned"
     data.push(0x02);
@@ -207,6 +207,7 @@ fn test_path_traversal_rejected() {
     data.extend_from_slice(evil_path.as_bytes());
     data.extend_from_slice(&0u32.to_le_bytes()); // width
     data.extend_from_slice(&0u32.to_le_bytes()); // height
+    data.push(0);                                // filter_type
     data.extend_from_slice(&5u64.to_le_bytes()); // data_size
     data.extend_from_slice(&0u32.to_le_bytes()); // CRC32 (rejected before CRC check)
     data.extend_from_slice(b"hello");           // payload
@@ -579,4 +580,109 @@ fn test_image_round_trip_compressed_max() {
             assert_eq!(loaded.get_pixel(x, y), &image::Rgb([(x * 32) as u8, (y * 32) as u8, 100]));
         }
     }
+}
+
+#[test]
+fn test_backward_compatibility_fails() {
+    let archive_dir = TempDir::new().unwrap();
+    let archive = archive_dir.path().join("old.compr");
+
+    // Build version 1 archive bytes manually
+    let mut data = Vec::new();
+    data.extend_from_slice(b"CMPR");
+    data.extend_from_slice(&1u16.to_le_bytes()); // Version 1
+    data.extend_from_slice(&0u16.to_le_bytes());
+
+    fs::write(&archive, &data).unwrap();
+
+    let dst = TempDir::new().unwrap();
+    let output = Command::new("cargo")
+        .args(["run", "--", "unpack", archive.to_str().unwrap(), dst.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("version") || stderr.contains("Version"), "Error should mention 'version', got: {}", stderr);
+}
+
+#[test]
+fn test_corrupted_filter_type_crc_failure() {
+    let src = TempDir::new().unwrap();
+    let archive_dir = TempDir::new().unwrap();
+    let archive = archive_dir.path().join("test.compr");
+
+    let mut img = image::RgbImage::new(4, 4);
+    img.save(src.path().join("img.png")).unwrap();
+
+    // Pack it (version 2, with filter_type: 2 for image)
+    run_pack(src.path(), &archive);
+
+    let mut data = fs::read(&archive).unwrap();
+    
+    // Craft an uncompressed version 2 archive manually:
+    let mut manual_data = Vec::new();
+    manual_data.extend_from_slice(b"CMPR");
+    manual_data.extend_from_slice(&2u16.to_le_bytes()); // Version 2
+    manual_data.extend_from_slice(&0u16.to_le_bytes()); // No flags (ZSTD off)
+    
+    // Entry: kind=MARKER_IMAGE(0x01), path="img.png"
+    manual_data.push(0x01);
+    let path = "img.png";
+    manual_data.extend_from_slice(&(path.len() as u16).to_le_bytes());
+    manual_data.extend_from_slice(path.as_bytes());
+    
+    // width=2, height=2, filter_type=2, data_size=12, CRC32
+    manual_data.extend_from_slice(&2u32.to_le_bytes()); // w
+    manual_data.extend_from_slice(&2u32.to_le_bytes()); // h
+    manual_data.push(2);                                // filter_type = 2 (Paeth)
+    
+    let payload = vec![0u8; 12];
+    let mut h = crc32fast::Hasher::new();
+    h.update(&[0x01]);
+    let path_len = path.len() as u16;
+    h.update(&path_len.to_le_bytes());
+    h.update(path.as_bytes());
+    h.update(&2u32.to_le_bytes());
+    h.update(&2u32.to_le_bytes());
+    h.update(&[2]);
+    h.update(&12u64.to_le_bytes());
+    h.update(&payload);
+    let crc = h.finalize();
+
+    manual_data.extend_from_slice(&12u64.to_le_bytes()); // data_size
+    manual_data.extend_from_slice(&crc.to_le_bytes());  // CRC32
+    manual_data.extend_from_slice(&payload);             // payload
+    
+    // Footer: FOOTER_MARKER(0xFF) + entry_count(1) + footer_crc(crc32(entry_count)) + MAGIC(CMPR)
+    manual_data.push(0xFF);
+    manual_data.extend_from_slice(&1u32.to_le_bytes());
+    let mut fh = crc32fast::Hasher::new();
+    fh.update(&1u32.to_le_bytes());
+    let footer_crc = fh.finalize();
+    manual_data.extend_from_slice(&footer_crc.to_le_bytes());
+    manual_data.extend_from_slice(b"CMPR");
+
+    fs::write(&archive, &manual_data).unwrap();
+
+    // Verify it passes when valid
+    let output = Command::new("cargo")
+        .args(["run", "--", "verify", archive.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "Verification of manually crafted valid archive failed");
+
+    // Corrupt the filter_type byte!
+    // filter_type is at: header(8) + kind(1) + plen(2) + path("img.png"=7) + w(4) + h(4) = 26th byte (index 26)
+    manual_data[26] = 0; // change from 2 to 0
+    fs::write(&archive, &manual_data).unwrap();
+
+    // Verify it fails due to CRC mismatch!
+    let output = Command::new("cargo")
+        .args(["run", "--", "verify", archive.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("CRC32") || stderr.contains("CRC"), "Expected CRC failure, got: {}", stderr);
 }

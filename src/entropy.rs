@@ -51,6 +51,8 @@ pub fn print_archive_entropy<R: Read>(reader: &mut R) -> Result<()> {
         let mut b4 = [0u8; 4];
         reader.read_exact(&mut b4)?; // width
         reader.read_exact(&mut b4)?; // height
+        let mut b1 = [0u8; 1];
+        reader.read_exact(&mut b1)?; // filter_type
         let mut b8 = [0u8; 8];
         reader.read_exact(&mut b8)?;
         let data_size = u64::from_le_bytes(b8) as usize;

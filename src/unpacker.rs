@@ -15,13 +15,15 @@ fn open_input(input: &str) -> Result<Box<dyn Read>> {
     }
 }
 
-/// Open input, read header, and wrap the payload stream with a ZSTD decompressor if needed.
-/// Returns (header, decompressed_reader).
 fn open_and_decompress(input: &str) -> Result<(ArchiveHeader, Box<dyn Read>)> {
     let reader = open_input(input)?;
     let mut pb_reader = BufReader::new(reader);
     let header = ArchiveHeader::read(&mut pb_reader)
         .context("Invalid archive header")?;
+
+    if header.version != crate::format::VERSION {
+        anyhow::bail!("Unsupported archive version: {:#06x}", header.version);
+    }
 
     let payload_reader: Box<dyn Read> = if header.flags & FLAG_ZSTD != 0 {
         compress::create_decompressor(pb_reader)?
@@ -71,6 +73,11 @@ fn extract_all<R: Read>(reader: &mut R, output_norm: &Path) -> Result<u32> {
         reader.read_exact(&mut b4)?;
         let height = u32::from_le_bytes(b4);
 
+        // Read filter type
+        let mut b1 = [0u8; 1];
+        reader.read_exact(&mut b1)?;
+        let filter_type = b1[0];
+
         // Read data size
         let mut b8 = [0u8; 8];
         reader.read_exact(&mut b8)?;
@@ -90,7 +97,7 @@ fn extract_all<R: Read>(reader: &mut R, output_norm: &Path) -> Result<u32> {
         }
 
         // Validate CRC32
-        let entry = Entry { kind, path: path.clone(), width, height, data };
+        let entry = Entry { kind, path: path.clone(), width, height, filter_type, data };
         let computed = entry.calculate_crc32()?;
         if stored_crc != computed {
             anyhow::bail!("CRC32 mismatch for '{path}': stored {stored_crc:#x}, computed {computed:#x}");
@@ -103,7 +110,26 @@ fn extract_all<R: Read>(reader: &mut R, output_norm: &Path) -> Result<u32> {
                 fs::create_dir_all(parent)
                     .with_context(|| format!("Create dir {:?}", parent))?;
             }
-            crate::image::save_planar(&dest, width, height, &entry.data)
+            let restored_data = match filter_type {
+                1 => {
+                    let plane_len = (width as usize) * (height as usize);
+                    let mut data = Vec::with_capacity(entry.data.len());
+                    for chunk in entry.data.chunks_exact(plane_len) {
+                        data.extend(crate::filter::Filter::Delta.reverse(chunk, width as usize));
+                    }
+                    data
+                }
+                2 => {
+                    let plane_len = (width as usize) * (height as usize);
+                    let mut data = Vec::with_capacity(entry.data.len());
+                    for chunk in entry.data.chunks_exact(plane_len) {
+                        data.extend(crate::filter::Filter::Paeth.reverse(chunk, width as usize));
+                    }
+                    data
+                }
+                _ => entry.data.clone(),
+            };
+            crate::image::save_planar(&dest, width, height, &restored_data)
                 .with_context(|| format!("Save image {:?}", dest))?;
         } else {
             // Video or raw file: write bytes directly
@@ -175,10 +201,12 @@ pub fn list_entries(input: &str) -> Result<()> {
         let mut pb = vec![0u8; plen];
         reader.read_exact(&mut pb)?;
         let path = String::from_utf8(pb).map_err(|_| anyhow::anyhow!("Bad path"))?;
-        // Skip width, height, data_size, CRC32, payload
+        // Skip width, height, filter_type, data_size, CRC32, payload
         let mut b4 = [0u8; 4];
         reader.read_exact(&mut b4)?;
         reader.read_exact(&mut b4)?;
+        let mut b1 = [0u8; 1];
+        reader.read_exact(&mut b1)?;
         let mut b8 = [0u8; 8];
         reader.read_exact(&mut b8)?;
         let ds = u64::from_le_bytes(b8) as usize;
@@ -216,6 +244,8 @@ pub fn archive_info(input: &str) -> Result<()> {
         reader.read_exact(&mut _pb)?;
         let mut b4 = [0u8; 4];
         reader.read_exact(&mut b4)?; reader.read_exact(&mut b4)?; // w, h
+        let mut b1 = [0u8; 1];
+        reader.read_exact(&mut b1)?; // filter_type
         let mut b8 = [0u8; 8];
         reader.read_exact(&mut b8)?;
         let ds = u64::from_le_bytes(b8) as usize;
@@ -257,12 +287,14 @@ pub fn verify_archive(input: &str) -> Result<()> {
         let mut b4 = [0u8; 4];
         reader.read_exact(&mut b4)?; let w = u32::from_le_bytes(b4);
         reader.read_exact(&mut b4)?; let h = u32::from_le_bytes(b4);
+        let mut b1 = [0u8; 1];
+        reader.read_exact(&mut b1)?; let filter_type = b1[0];
         let mut b8 = [0u8; 8];
         reader.read_exact(&mut b8)?; let ds = u64::from_le_bytes(b8) as usize;
         reader.read_exact(&mut b4)?; let sc = u32::from_le_bytes(b4);
         let mut data = vec![0u8; ds];
         reader.read_exact(&mut data)?;
-        let entry = Entry { kind: kind[0], path: path.clone(), width: w, height: h, data };
+        let entry = Entry { kind: kind[0], path: path.clone(), width: w, height: h, filter_type, data };
         let cc = entry.calculate_crc32()?;
         if sc != cc {
             anyhow::bail!("CRC32 FAIL: '{path}' — stored {sc:#x}, computed {cc:#x}");

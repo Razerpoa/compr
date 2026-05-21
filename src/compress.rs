@@ -48,12 +48,22 @@ impl CompressParams {
     /// Uses lower level and smaller window to stay within budget.
     pub fn eco(mem_mb: u32) -> Self {
         // Window log 27 = 128 MiB, 26 = 64 MiB, etc.
-        let window_log = if mem_mb >= 256 {
-            ECO_WINDOW_LOG
-        } else if mem_mb >= 128 {
-            26
-        } else {
-            25
+        let window_log = {
+            // Convert MB to Bytes
+            let mem_bytes = (mem_mb as u64) * 1024 * 1024;
+            
+            // Fast integer log2 calculation
+            let exact_log = (64 - mem_bytes.leading_zeros() - 1) as u32;
+            
+            // Clamp the values to keep them within ZSTD's legal operational boundaries
+            // ZSTD generally requires a minimum log of 10 (1 KB) and a maximum safe ultra log of 31 (2 GB)
+            if exact_log < 10 {
+                10
+            } else if exact_log > 31 {
+                31
+            } else {
+                exact_log
+            }
         };
         Self {
             level: 15,

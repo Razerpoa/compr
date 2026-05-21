@@ -108,12 +108,18 @@ pub fn pack(input_dir: &str, output: &str, params: &CompressParams) -> Result<()
             EntryKind::Image => {
                 let (w, h, planar) = image::load_planar(path)
                     .with_context(|| format!("Load image {:?}", path))?;
+                let plane_len = (w as usize) * (h as usize);
+                let mut filtered = Vec::with_capacity(planar.len());
+                for chunk in planar.chunks_exact(plane_len) {
+                    filtered.extend(crate::filter::Filter::Paeth.apply(chunk, w as usize));
+                }
                 let entry_data = Entry {
                     kind: MARKER_IMAGE,
                     path: rel_str.to_string(),
                     width: w,
                     height: h,
-                    data: planar,
+                    filter_type: 2,
+                    data: filtered,
                 };
                 let _written = entry_data.write(&mut writer)?;
                 entry_count += 1;
@@ -130,6 +136,7 @@ pub fn pack(input_dir: &str, output: &str, params: &CompressParams) -> Result<()
                     path: rel_str.to_string(),
                     width: 0,
                     height: 0,
+                    filter_type: 0,
                     data,
                 };
                 let _written = entry_data.write(&mut writer)?;
