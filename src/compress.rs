@@ -11,7 +11,7 @@ pub const DEFAULT_WINDOW_LOG: u32 = 28;
 pub const MAX_WINDOW_LOG: u32 = 30;
 
 /// Eco-mode window log: 128 MiB = 2^27
-pub const ECO_WINDOW_LOG: u32 = 27;
+// pub const ECO_WINDOW_LOG: u32 = 27;
 
 /// Compression parameters for ZSTD.
 #[derive(Debug, Clone)]
