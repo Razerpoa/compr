@@ -1,3 +1,5 @@
+use std::thread::available_parallelism;
+
 use clap::Parser;
 use clap::Subcommand;
 
@@ -8,6 +10,7 @@ mod filter;
 mod format;
 mod image;
 mod packer;
+mod sort;
 mod unpacker;
 
 #[derive(Parser)]
@@ -35,6 +38,9 @@ enum Commands {
         /// Number of compression threads (0 = all cores, default 2)
         #[arg(long)]
         threads: Option<u32>,
+        /// Sort order: folder (default) or color (dominant hue grouping)
+        #[arg(long, default_value = "folder")]
+        sort: String,
     },
     /// Unpack a compr archive into a directory
     Unpack { input: String, output_dir: String },
@@ -72,7 +78,9 @@ fn parse_mem_budget(s: &str) -> Result<u32, String> {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Pack { input_dir, output, max, mem, level, threads } => {
+        Commands::Pack { input_dir, output, max, mem, level, threads, sort } => {
+            let sort_mode = sort.parse::<sort::SortMode>()
+                .map_err(|e| anyhow::anyhow!("Invalid --sort value: {}", e))?;
             let mut params = if max {
                 compress::CompressParams::max()
             } else if let Some(mem_str) = mem {
@@ -86,9 +94,19 @@ fn main() -> anyhow::Result<()> {
                 params.level = lvl;
             }
             if let Some(t) = threads {
-                params.threads = t;
+                if t > 0 {
+                    params.threads = t;
+                } else {
+                    params.threads = match available_parallelism() {
+                        Ok(num) => num.get() as u32,
+                        Err(err) => {
+                            eprintln!("cannot get maximum cpu threads default to auto: {err}");
+                            0
+                        }
+                    };
+                }
             }
-            packer::pack(&input_dir, &output, &params)?
+            packer::pack(&input_dir, &output, &params, sort_mode)?
         }
         Commands::Unpack { input, output_dir } => unpacker::unpack(&input, &output_dir)?,
         Commands::List { archive } => unpacker::list_entries(&archive)?,

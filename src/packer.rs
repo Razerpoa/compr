@@ -7,6 +7,7 @@ use crate::classify::{classify, EntryKind};
 use crate::compress::{self, CompressParams};
 use crate::format::{ArchiveFooter, ArchiveHeader, Entry, FLAG_ZSTD, MAGIC, MARKER_IMAGE, MARKER_VIDEO, VERSION};
 use crate::image;
+use crate::sort::{sort_entries, SortMode};
 
 /// Format byte count as human-readable string (bytes, KB, MB, GB).
 fn human_bytes(n: u64) -> String {
@@ -25,7 +26,7 @@ fn human_bytes(n: u64) -> String {
     }
 }
 
-pub fn pack(input_dir: &str, output: &str, params: &CompressParams) -> Result<()> {
+pub fn pack(input_dir: &str, output: &str, params: &CompressParams, sort_mode: SortMode) -> Result<()> {
     let input_path = Path::new(input_dir);
     if !input_path.is_dir() {
         anyhow::bail!("Error: '{}' is not a valid directory", input_dir);
@@ -75,13 +76,13 @@ pub fn pack(input_dir: &str, output: &str, params: &CompressParams) -> Result<()
         anyhow::bail!("Error: No supported files found in '{}'", input_dir);
     }
 
-    // Sort: parent directory path → kind (Image=0 before Video=1) → filename
-    eprintln!("Phase: sorting entries by folder (images before videos) ...");
-    file_entries.sort_by(|(a, ak), (b, bk)| {
-        a.path().parent().cmp(&b.path().parent())
-            .then_with(|| (*ak).cmp(bk))
-            .then_with(|| a.file_name().cmp(b.file_name()))
-    });
+    // Sort entries according to the chosen strategy.
+    let sort_label = match sort_mode {
+        SortMode::Folder => "folder-grouped (images before videos)",
+        SortMode::Color  => "color (dominant hue → saturation → value)",
+    };
+    eprintln!("Phase: sorting entries by {} ...", sort_label);
+    sort_entries(&mut file_entries, sort_mode);
 
     // Write header (always uncompressed so readers can detect compression flag)
     eprintln!("Phase: writing archive header ...");
