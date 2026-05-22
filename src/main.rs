@@ -32,6 +32,9 @@ enum Commands {
         /// ZSTD compression level (1-22, default 19)
         #[arg(long)]
         level: Option<i32>,
+        /// Number of compression threads (0 = all cores, default 2)
+        #[arg(long)]
+        threads: Option<u32>,
     },
     /// Unpack a compr archive into a directory
     Unpack { input: String, output_dir: String },
@@ -69,7 +72,7 @@ fn parse_mem_budget(s: &str) -> Result<u32, String> {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Pack { input_dir, output, max, mem, level } => {
+        Commands::Pack { input_dir, output, max, mem, level, threads } => {
             let mut params = if max {
                 compress::CompressParams::max()
             } else if let Some(mem_str) = mem {
@@ -81,6 +84,9 @@ fn main() -> anyhow::Result<()> {
             };
             if let Some(lvl) = level {
                 params.level = lvl;
+            }
+            if let Some(t) = threads {
+                params.threads = t;
             }
             packer::pack(&input_dir, &output, &params)?
         }
