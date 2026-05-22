@@ -42,6 +42,9 @@ enum Commands {
         /// Sort order: folder (default) or color (dominant hue grouping)
         #[arg(long, default_value = "folder")]
         sort: String,
+        /// Enable SREP preprocessor (default true)
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        srep: bool,
     },
     /// Unpack a compr archive into a directory
     Unpack { input: String, output_dir: String },
@@ -79,7 +82,7 @@ fn parse_mem_budget(s: &str) -> Result<u32, String> {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Pack { input_dir, output, max, mem, level, threads, sort } => {
+        Commands::Pack { input_dir, output, max, mem, level, threads, sort, srep } => {
             let sort_mode = sort.parse::<sort::SortMode>()
                 .map_err(|e| anyhow::anyhow!("Invalid --sort value: {}", e))?;
             let mut params = if max {
@@ -107,6 +110,7 @@ fn main() -> anyhow::Result<()> {
                     };
                 }
             }
+            params.srep = srep;
             packer::pack(&input_dir, &output, &params, sort_mode)?
         }
         Commands::Unpack { input, output_dir } => unpacker::unpack(&input, &output_dir)?,
