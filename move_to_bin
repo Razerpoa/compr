@@ -1,0 +1,1 @@
+cp target/release/compr ~/.local/bin
