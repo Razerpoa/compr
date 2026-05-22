@@ -1,4 +1,5 @@
 use std::path::Path;
+use rayon::prelude::*;
 use crate::classify::EntryKind;
 
 /// Sorting strategy for pack entries.
@@ -44,9 +45,10 @@ pub fn sort_entries(
         }
 
         SortMode::Color => {
-            // 1. Pre-compute color key for every entry (avoids re-opening images
-            //    on every comparison).
-            let keys: Vec<(u8, u8, u8)> = entries.iter().map(|(e, k)| {
+            // 1. Pre-compute color key for every entry in parallel.
+            //    This is the expensive step (thumbnail decode per image);
+            //    rayon spreads it across all available cores.
+            let keys: Vec<(u8, u8, u8)> = entries.par_iter().map(|(e, k)| {
                 if *k == EntryKind::Image {
                     color_key(e.path())
                 } else {
