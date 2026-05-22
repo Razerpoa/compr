@@ -22,8 +22,8 @@ pub fn shannon_entropy(data: &[u8]) -> f64 {
 }
 
 /// Print entropy info for all entries in a compr archive.
-pub fn print_archive_entropy<R: Read>(reader: &mut R) -> Result<()> {
-    use crate::format::{FOOTER_MARKER, MARKER_IMAGE, MARKER_VIDEO};
+pub fn print_archive_entropy<R: Read>(reader: &mut R) -> Result<u32> {
+    use crate::format::{FOOTER_MARKER, MARKER_IMAGE, MARKER_VIDEO, MARKER_SOLID_BLOCK};
 
     let mut count = 0u32;
     let mut total_entropy = 0.0;
@@ -35,6 +35,9 @@ pub fn print_archive_entropy<R: Read>(reader: &mut R) -> Result<()> {
         }
         if kind[0] == FOOTER_MARKER {
             break;
+        }
+        if kind[0] == MARKER_SOLID_BLOCK {
+            return Ok(count | 0x8000_0000);
         }
         if kind[0] != MARKER_IMAGE && kind[0] != MARKER_VIDEO {
             anyhow::bail!("Bad kind 0x{:02x} at entry {count}", kind[0]);
@@ -71,11 +74,9 @@ pub fn print_archive_entropy<R: Read>(reader: &mut R) -> Result<()> {
 
     if count > 0 {
         println!("\n  Average entropy: {:.4} bits/byte across {count} entries", total_entropy / count as f64);
-    } else {
-        println!("  (no entries)");
     }
 
-    Ok(())
+    Ok(count)
 }
 
 #[cfg(test)]

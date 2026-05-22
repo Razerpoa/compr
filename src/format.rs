@@ -2,11 +2,13 @@ use std::io::{Read, Write};
 use thiserror::Error;
 
 pub const MAGIC: &[u8; 4] = b"CMPR";
-pub const VERSION: u16 = 0x0002;
+pub const VERSION: u16 = 0x0003;
 pub const MARKER_IMAGE: u8 = 0x01;
 pub const MARKER_VIDEO: u8 = 0x02;
+pub const MARKER_SOLID_BLOCK: u8 = 0x03;
 pub const FOOTER_MARKER: u8 = 0xFF; // unambiguous vs 0x01/0x02
 pub const FLAG_ZSTD: u16 = 0x0001; // archive payload is ZSTD-compressed
+pub const FLAG_SREP: u16 = 0x0002; // archive payload is SREP-compressed
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArchiveHeader {

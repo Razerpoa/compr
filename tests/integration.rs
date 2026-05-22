@@ -319,10 +319,10 @@ fn test_mixed_content_ordering() {
     let pos_mp4 = stdout.find("video.mp4").unwrap();
     let pos_avi = stdout.find("video2.avi").unwrap();
 
-    assert!(pos_png < pos_mp4, "image1.png should appear before video.mp4");
-    assert!(pos_jpg < pos_mp4, "image2.jpg should appear before video.mp4");
-    assert!(pos_png < pos_avi, "image1.png should appear before video2.avi");
-    assert!(pos_jpg < pos_avi, "image2.jpg should appear before video2.avi");
+    assert!(pos_mp4 < pos_png, "video.mp4 should appear before image1.png");
+    assert!(pos_mp4 < pos_jpg, "video.mp4 should appear before image2.jpg");
+    assert!(pos_avi < pos_png, "video2.avi should appear before image1.png");
+    assert!(pos_avi < pos_jpg, "video2.avi should appear before image2.jpg");
     assert!(!stdout.contains("notes.txt"), "notes.txt should be skipped");
 
     run_unpack(&archive, dst.path());
@@ -587,10 +587,10 @@ fn test_backward_compatibility_fails() {
     let archive_dir = TempDir::new().unwrap();
     let archive = archive_dir.path().join("old.compr");
 
-    // Build version 1 archive bytes manually
+    // Build version 2 archive bytes manually
     let mut data = Vec::new();
     data.extend_from_slice(b"CMPR");
-    data.extend_from_slice(&1u16.to_le_bytes()); // Version 1
+    data.extend_from_slice(&2u16.to_le_bytes()); // Version 2
     data.extend_from_slice(&0u16.to_le_bytes());
 
     fs::write(&archive, &data).unwrap();
@@ -620,10 +620,10 @@ fn test_corrupted_filter_type_crc_failure() {
 
     let mut data = fs::read(&archive).unwrap();
     
-    // Craft an uncompressed version 2 archive manually:
+    // Craft an uncompressed version 3 archive manually:
     let mut manual_data = Vec::new();
     manual_data.extend_from_slice(b"CMPR");
-    manual_data.extend_from_slice(&2u16.to_le_bytes()); // Version 2
+    manual_data.extend_from_slice(&3u16.to_le_bytes()); // Version 3
     manual_data.extend_from_slice(&0u16.to_le_bytes()); // No flags (ZSTD off)
     
     // Entry: kind=MARKER_IMAGE(0x01), path="img.png"

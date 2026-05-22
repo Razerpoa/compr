@@ -38,8 +38,11 @@ pub fn sort_entries(
     match mode {
         SortMode::Folder => {
             entries.sort_by(|(a, ak), (b, bk)| {
-                a.path().parent().cmp(&b.path().parent())
-                    .then_with(|| (*ak).cmp(bk))
+                // Video first (uncompressed), then Image (compressed)
+                let ka = if *ak == EntryKind::Video { 0 } else { 1 };
+                let kb = if *bk == EntryKind::Video { 0 } else { 1 };
+                ka.cmp(&kb)
+                    .then_with(|| a.path().parent().cmp(&b.path().parent()))
                     .then_with(|| a.file_name().cmp(b.file_name()))
             });
         }
@@ -62,10 +65,11 @@ pub fn sort_entries(
             indices.sort_by(|&a, &b| {
                 let ka = keys[a];
                 let kb = keys[b];
-                // is_video flag (false < true → images first)
+                // is_video flag (true = video)
                 let va = ka == (u8::MAX, u8::MAX, u8::MAX);
                 let vb = kb == (u8::MAX, u8::MAX, u8::MAX);
-                va.cmp(&vb)
+                // Video first (uncompressed)
+                vb.cmp(&va)
                     // hue → saturation → value
                     .then_with(|| ka.cmp(&kb))
                     // tie-break by filename

@@ -11,6 +11,7 @@ mod format;
 mod image;
 mod packer;
 mod sort;
+mod srep;
 mod unpacker;
 
 #[derive(Parser)]

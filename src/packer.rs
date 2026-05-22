@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use walkdir::WalkDir;
 use crate::classify::{classify, EntryKind};
 use crate::compress::{self, CompressParams};
-use crate::format::{ArchiveFooter, ArchiveHeader, Entry, FLAG_ZSTD, MAGIC, MARKER_IMAGE, MARKER_VIDEO, VERSION};
+use crate::format::{ArchiveFooter, ArchiveHeader, Entry, FLAG_SREP, FLAG_ZSTD, MAGIC, MARKER_IMAGE, MARKER_SOLID_BLOCK, MARKER_VIDEO, VERSION};
 use crate::image;
 use crate::sort::{sort_entries, SortMode};
 
@@ -86,75 +86,106 @@ pub fn pack(input_dir: &str, output: &str, params: &CompressParams, sort_mode: S
 
     // Write header (always uncompressed so readers can detect compression flag)
     eprintln!("Phase: writing archive header ...");
-    ArchiveHeader { magic: *MAGIC, version: VERSION, flags: FLAG_ZSTD }
+    let mut flags = FLAG_ZSTD;
+    if params.srep {
+        flags |= FLAG_SREP;
+    }
+    ArchiveHeader { magic: *MAGIC, version: VERSION, flags }
         .write(&mut raw_writer)?;
-
-    // Wrap with ZSTD compressor — entries + footer will be compressed
-    let thread_str = if params.threads == 0 { "auto".to_string() } else { params.threads.to_string() };
-    eprintln!("Phase: compressing {} entries (level={}, window=2^{}MiB, LDM={}, threads={}) ...",
-        file_entries.len(), params.level, params.window_log, params.ldm, thread_str,
-    );
-    let mut writer = compress::create_compressor(raw_writer, params)?;
 
     let mut entry_count: u32 = 0;
     let mut raw_input_bytes: u64 = 0;
 
-    for (entry, kind) in &file_entries {
-        let path = entry.path();
-        let rel = path.strip_prefix(input_path).unwrap();
-        let rel_str = rel.to_str()
-            .with_context(|| format!("Non-UTF-8 path: {:?}", rel))?;
+    // Phase 1: Write uncompressed video entries
+    let video_entries: Vec<&(walkdir::DirEntry, EntryKind)> = file_entries.iter()
+        .filter(|(_, k)| *k == EntryKind::Video).collect();
 
-        match kind {
-            EntryKind::Image => {
-                let (w, h, planar) = image::load_planar(path)
-                    .with_context(|| format!("Load image {:?}", path))?;
-                let plane_len = (w as usize) * (h as usize);
-                let mut filtered = Vec::with_capacity(planar.len());
-                for chunk in planar.chunks_exact(plane_len) {
-                    filtered.extend(crate::filter::Filter::Paeth.apply(chunk, w as usize));
-                }
-                let entry_data = Entry {
-                    kind: MARKER_IMAGE,
-                    path: rel_str.to_string(),
-                    width: w,
-                    height: h,
-                    filter_type: 2,
-                    data: filtered,
-                };
-                let _written = entry_data.write(&mut writer)?;
-                entry_count += 1;
-                raw_input_bytes += (w as u64) * (h as u64) * 3;
-                eprintln!(" -> Image: {} ({}x{})", rel_str, w, h);
-            }
-            EntryKind::Video => {
-                let data = fs::read(path)
-                    .with_context(|| format!("Read {:?}", path))?;
-                let data_len = data.len();
-                raw_input_bytes += data_len as u64;
-                let entry_data = Entry {
-                    kind: MARKER_VIDEO,
-                    path: rel_str.to_string(),
-                    width: 0,
-                    height: 0,
-                    filter_type: 0,
-                    data,
-                };
-                let _written = entry_data.write(&mut writer)?;
-                entry_count += 1;
-                eprintln!(" -> Video: {} ({} bytes)", rel_str, data_len);
-            }
+    if !video_entries.is_empty() {
+        eprintln!("Phase: writing {} videos (uncompressed) ...", video_entries.len());
+        for (entry, _) in &video_entries {
+            let path = entry.path();
+            let rel = path.strip_prefix(input_path).unwrap();
+            let rel_str = rel.to_str()
+                .with_context(|| format!("Non-UTF-8 path: {:?}", rel))?;
+
+            let data = fs::read(path)
+                .with_context(|| format!("Read {:?}", path))?;
+            let data_len = data.len();
+            raw_input_bytes += data_len as u64;
+            let entry_data = Entry {
+                kind: MARKER_VIDEO,
+                path: rel_str.to_string(),
+                width: 0,
+                height: 0,
+                filter_type: 0,
+                data,
+            };
+            entry_data.write(&mut raw_writer)?;
+            entry_count += 1;
+            eprintln!(" -> Video: {} ({} bytes)", rel_str, data_len);
         }
     }
 
-    eprintln!("Phase: writing footer ...");
-    ArchiveFooter {
-        entry_count,
-        crc32: ArchiveFooter::compute_crc32(entry_count),
-    }.write(&mut writer)?;
+    let image_entries: Vec<&(walkdir::DirEntry, EntryKind)> = file_entries.iter()
+        .filter(|(_, k)| *k == EntryKind::Image).collect();
 
-    // Flush ZSTD encoder by dropping the writer (triggers auto_finish)
-    drop(writer);
+    if !image_entries.is_empty() {
+        // Phase 2: Start compressed solid block for images
+        raw_writer.write_all(&[MARKER_SOLID_BLOCK])?;
+        raw_writer.flush()?;
+
+        let thread_str = if params.threads == 0 { "auto".to_string() } else { params.threads.to_string() };
+        let srep_str = if params.srep { "+SREP" } else { "" };
+        eprintln!("Phase: compressing {} images (ZSTD{} level={}, window=2^{}MiB, LDM={}, threads={}) ...",
+            image_entries.len(), srep_str, params.level, params.window_log, params.ldm, thread_str,
+        );
+
+        {
+            let mut writer = compress::create_compressor(raw_writer, params)?;
+
+            for (entry, _) in &image_entries {
+            let path = entry.path();
+            let rel = path.strip_prefix(input_path).unwrap();
+            let rel_str = rel.to_str()
+                .with_context(|| format!("Non-UTF-8 path: {:?}", rel))?;
+
+            let (w, h, planar) = image::load_planar(path)
+                .with_context(|| format!("Load image {:?}", path))?;
+            let plane_len = (w as usize) * (h as usize);
+            let mut filtered = Vec::with_capacity(planar.len());
+            for chunk in planar.chunks_exact(plane_len) {
+                filtered.extend(crate::filter::Filter::Paeth.apply(chunk, w as usize));
+            }
+            let entry_data = Entry {
+                kind: MARKER_IMAGE,
+                path: rel_str.to_string(),
+                width: w,
+                height: h,
+                filter_type: 2,
+                data: filtered,
+            };
+            let _written = entry_data.write(&mut writer)?;
+            entry_count += 1;
+            raw_input_bytes += (w as u64) * (h as u64) * 3;
+            eprintln!(" -> Image: {} ({}x{})", rel_str, w, h);
+        }
+
+            eprintln!("Phase: writing footer ...");
+            ArchiveFooter {
+                entry_count,
+                crc32: ArchiveFooter::compute_crc32(entry_count),
+            }.write(&mut writer)?;
+
+            // Flush compressor by dropping the writer
+        }
+    } else {
+        // No images, but we still need a footer for the archive to be valid
+        eprintln!("Phase: writing footer (uncompressed) ...");
+        ArchiveFooter {
+            entry_count,
+            crc32: ArchiveFooter::compute_crc32(entry_count),
+        }.write(&mut raw_writer)?;
+    }
 
     // For file output, we can check the compressed size.
     if output != "-" {

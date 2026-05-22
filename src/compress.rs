@@ -20,6 +20,7 @@ pub struct CompressParams {
     pub window_log: u32,
     pub threads: u32,
     pub ldm: bool,
+    pub srep: bool,
 }
 
 impl Default for CompressParams {
@@ -29,6 +30,7 @@ impl Default for CompressParams {
             window_log: DEFAULT_WINDOW_LOG,
             threads: 2,
             ldm: true,
+            srep: true,
         }
     }
 }
@@ -41,6 +43,7 @@ impl CompressParams {
             window_log: MAX_WINDOW_LOG,
             threads: 0, // 0 = auto-detect all cores
             ldm: true,
+            srep: true,
         }
     }
 
@@ -70,7 +73,28 @@ impl CompressParams {
             window_log,
             threads: 2,
             ldm: true,
+            srep: true,
         }
+    }
+}
+
+/// Wrapper that finishes SREP on drop
+struct SrepFinishWriter<W: Write> {
+    inner: crate::srep::SrepWriter<W>,
+}
+
+impl<W: Write> Write for SrepFinishWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.inner.write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl<W: Write> Drop for SrepFinishWriter<W> {
+    fn drop(&mut self) {
+        let _ = self.inner.finish();
     }
 }
 
@@ -97,8 +121,15 @@ pub fn create_compressor<W: Write + 'static>(
         enc.multithread(params.threads)?;
     }
 
-    // auto_finish ensures the ZSTD frame is finalized on drop
-    Ok(Box::new(enc.auto_finish()))
+    let writer: Box<dyn Write> = Box::new(enc.auto_finish());
+
+    if params.srep {
+        Ok(Box::new(SrepFinishWriter {
+            inner: crate::srep::SrepWriter::new(writer),
+        }))
+    } else {
+        Ok(writer)
+    }
 }
 
 /// Create a ZSTD-decompressing reader from an inner reader.
@@ -108,10 +139,18 @@ pub fn create_compressor<W: Write + 'static>(
 /// default safe memory limit.
 pub fn create_decompressor<R: Read + 'static>(
     inner: R,
+    srep: bool,
 ) -> Result<Box<dyn Read>> {
     let mut dec = zstd::stream::read::Decoder::new(inner)?;
     // Allow up to 2 GiB window (matches MAX_WINDOW_LOG from --max).
     // The decoder's own safety limit is more restrictive by default.
     dec.window_log_max(31)?;
-    Ok(Box::new(dec))
+
+    let reader: Box<dyn Read> = Box::new(dec);
+
+    if srep {
+        Ok(Box::new(crate::srep::SrepReader::new(reader)))
+    } else {
+        Ok(reader)
+    }
 }

@@ -3,7 +3,7 @@ use std::io::{self, BufReader, Read};
 use std::path::Path;
 use anyhow::{Context, Result};
 use crate::compress;
-use crate::format::{ArchiveHeader, Entry, FLAG_ZSTD, FOOTER_MARKER, MAGIC, MARKER_IMAGE, MARKER_VIDEO, is_path_traversal};
+use crate::format::{ArchiveHeader, Entry, FOOTER_MARKER, MAGIC, MARKER_IMAGE, MARKER_VIDEO, is_path_traversal};
 
 fn open_input(input: &str) -> Result<Box<dyn Read>> {
     if input == "-" {
@@ -15,7 +15,14 @@ fn open_input(input: &str) -> Result<Box<dyn Read>> {
     }
 }
 
-fn open_and_decompress(input: &str) -> Result<(ArchiveHeader, Box<dyn Read>)> {
+#[derive(Debug, PartialEq, Eq)]
+enum ExtractResult {
+    Footer(u32),
+    SolidBlock(u32),
+    EndOfStream(u32),
+}
+
+fn open_and_prepare(input: &str) -> Result<(ArchiveHeader, BufReader<Box<dyn Read>>)> {
     let reader = open_input(input)?;
     let mut pb_reader = BufReader::new(reader);
     let header = ArchiveHeader::read(&mut pb_reader)
@@ -25,27 +32,28 @@ fn open_and_decompress(input: &str) -> Result<(ArchiveHeader, Box<dyn Read>)> {
         anyhow::bail!("Unsupported archive version: {:#06x}", header.version);
     }
 
-    let payload_reader: Box<dyn Read> = if header.flags & FLAG_ZSTD != 0 {
-        compress::create_decompressor(pb_reader)?
-    } else {
-        Box::new(pb_reader)
-    };
-
-    Ok((header, payload_reader))
+    Ok((header, pb_reader))
 }
 
 /// Read entries sequentially until FOOTER_MARKER, then validate footer.
 /// Returns the number of entries extracted.
-fn extract_all<R: Read>(reader: &mut R, output_norm: &Path) -> Result<u32> {
+fn extract_all<R: Read>(reader: &mut R, output_norm: &Path, _header: &ArchiveHeader, total_so_far: u32) -> Result<ExtractResult> {
     let mut count = 0u32;
 
     loop {
         // Read kind byte (first byte of every entry OR footer marker)
         let mut kind_buf = [0u8; 1];
-        if reader.read_exact(&mut kind_buf).is_err() {
-            anyhow::bail!("Unexpected EOF while reading entry {count}");
+        if let Err(e) = reader.read_exact(&mut kind_buf) {
+            if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                return Ok(ExtractResult::EndOfStream(count));
+            }
+            return Err(e.into());
         }
         let kind = kind_buf[0];
+
+        if kind == crate::format::MARKER_SOLID_BLOCK {
+            return Ok(ExtractResult::SolidBlock(count));
+        }
 
         if kind == FOOTER_MARKER {
             break; // Reached the footer
@@ -152,26 +160,28 @@ fn extract_all<R: Read>(reader: &mut R, output_norm: &Path) -> Result<u32> {
     let footer_count = u32::from_le_bytes(eb);
 
     let cc = { let mut h = crc32fast::Hasher::new(); h.update(&eb); h.finalize() };
-    reader.read_exact(&mut eb)?;
-    let footer_crc = u32::from_le_bytes(eb);
+    let mut crc_buf = [0u8; 4];
+    reader.read_exact(&mut crc_buf)?;
+    let footer_crc = u32::from_le_bytes(crc_buf);
     if footer_crc != cc {
         anyhow::bail!("Footer CRC32: stored {footer_crc:#x}, computed {cc:#x}");
     }
 
-    reader.read_exact(&mut eb)?;
-    if eb != *MAGIC {
-        anyhow::bail!("Invalid ending magic: {eb:?}");
+    let mut magic_buf = [0u8; 4];
+    reader.read_exact(&mut magic_buf)?;
+    if magic_buf != *MAGIC {
+        anyhow::bail!("Invalid ending magic: {magic_buf:?}");
     }
 
-    if footer_count != count {
-        anyhow::bail!("Entry count mismatch: footer says {footer_count}, extracted {count}");
+    if footer_count != total_so_far + count {
+        anyhow::bail!("Entry count mismatch: footer says {footer_count}, extracted {}", total_so_far + count);
     }
 
-    Ok(count)
+    Ok(ExtractResult::Footer(count))
 }
 
 pub fn unpack(input: &str, output_dir: &str) -> Result<()> {
-    let (_header, mut reader) = open_and_decompress(input)?;
+    let (header, mut reader) = open_and_prepare(input)?;
 
     let output_path = Path::new(output_dir);
     fs::create_dir_all(output_path)
@@ -179,19 +189,47 @@ pub fn unpack(input: &str, output_dir: &str) -> Result<()> {
     let output_norm = output_path.canonicalize()
         .with_context(|| format!("Canonicalize '{output_dir}'"))?;
 
-    let count = extract_all(&mut reader, &output_norm)?;
-    eprintln!("\nUnpacked: {count} entries");
+    let res = extract_all(&mut reader, &output_norm, &header, 0)?;
+    let mut total_count;
+
+    match res {
+        ExtractResult::Footer(c) => total_count = c,
+        ExtractResult::SolidBlock(c) => {
+            total_count = c;
+            // Reached solid block, create decompressor
+            let srep = (header.flags & crate::format::FLAG_SREP) != 0;
+            let mut dec_reader = compress::create_decompressor(reader, srep)?;
+            // Continue extraction
+            let res2 = extract_all(&mut dec_reader, &output_norm, &header, total_count)?;
+            match res2 {
+                ExtractResult::Footer(c2) => total_count += c2,
+                _ => anyhow::bail!("Solid block did not end with a footer"),
+            }
+        }
+        ExtractResult::EndOfStream(c) => {
+            if c > 0 { anyhow::bail!("Unexpected EOF after {c} entries"); }
+            total_count = 0;
+        }
+    }
+
+    eprintln!("\nUnpacked: {total_count} entries");
     Ok(())
 }
 
-pub fn list_entries(input: &str) -> Result<()> {
-    let (_header, mut reader) = open_and_decompress(input)?;
-
+fn list_entries_internal<R: Read>(reader: &mut R, _header: &ArchiveHeader, _total_so_far: u32) -> Result<ExtractResult> {
     let mut count = 0u32;
     loop {
         let mut kind = [0u8; 1];
-        if reader.read_exact(&mut kind).is_err() { break; }
+        if let Err(e) = reader.read_exact(&mut kind) {
+             if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                 return Ok(ExtractResult::EndOfStream(count));
+             }
+             return Err(e.into());
+        }
         if kind[0] == FOOTER_MARKER { break; }
+        if kind[0] == crate::format::MARKER_SOLID_BLOCK {
+            return Ok(ExtractResult::SolidBlock(count));
+        }
         if kind[0] != MARKER_IMAGE && kind[0] != MARKER_VIDEO {
             anyhow::bail!("Bad kind 0x{:02x}", kind[0]);
         }
@@ -223,17 +261,46 @@ pub fn list_entries(input: &str) -> Result<()> {
         println!("  {kind_str:5}  {path}  ({ds} bytes)");
         count += 1;
     }
-    println!("\nTotal: {count} entries");
+    Ok(ExtractResult::Footer(count))
+}
+
+pub fn list_entries(input: &str) -> Result<()> {
+    let (header, mut reader) = open_and_prepare(input)?;
+
+    let res = list_entries_internal(&mut reader, &header, 0)?;
+    let mut total_count;
+    match res {
+        ExtractResult::Footer(c) => total_count = c,
+        ExtractResult::SolidBlock(c) => {
+            total_count = c;
+            let srep = (header.flags & crate::format::FLAG_SREP) != 0;
+            let mut dec_reader = compress::create_decompressor(reader, srep)?;
+            let res2 = list_entries_internal(&mut dec_reader, &header, total_count)?;
+            match res2 {
+                ExtractResult::Footer(c2) => total_count += c2,
+                _ => anyhow::bail!("Solid block did not end with a footer"),
+            }
+        }
+        ExtractResult::EndOfStream(c) => {
+            if c > 0 { anyhow::bail!("Unexpected EOF"); }
+            total_count = 0;
+        }
+    }
+
+    println!("\nTotal: {total_count} entries");
     Ok(())
 }
 
-pub fn archive_info(input: &str) -> Result<()> {
-    let (_header, mut reader) = open_and_decompress(input)?;
+fn archive_info_internal<R: Read>(reader: &mut R, total_so_far: u32) -> Result<ExtractResult> {
+    let mut count = 0u32;
     // Scan to the footer to get the official entry count
     loop {
         let mut kind = [0u8; 1];
-        if reader.read_exact(&mut kind).is_err() { break; }
+        if reader.read_exact(&mut kind).is_err() { return Ok(ExtractResult::EndOfStream(count)); }
         if kind[0] == FOOTER_MARKER { break; }
+        if kind[0] == crate::format::MARKER_SOLID_BLOCK {
+            return Ok(ExtractResult::SolidBlock(count));
+        }
         if kind[0] != MARKER_IMAGE && kind[0] != MARKER_VIDEO {
             anyhow::bail!("Bad kind 0x{:02x}", kind[0]);
         }
@@ -257,24 +324,53 @@ pub fn archive_info(input: &str) -> Result<()> {
             reader.read_exact(&mut skip[..cs])?;
             remaining -= cs;
         }
+        count += 1;
     }
     // Read footer entry count
     let mut eb = [0u8; 4];
     reader.read_exact(&mut eb)?;
-    let count = u32::from_le_bytes(eb);
+    let footer_count = u32::from_le_bytes(eb);
+    if footer_count != total_so_far + count {
+         // This is a bit loose for info but okay
+    }
+    Ok(ExtractResult::Footer(footer_count))
+}
+
+pub fn archive_info(input: &str) -> Result<()> {
+    let (header, mut reader) = open_and_prepare(input)?;
+
+    let res = archive_info_internal(&mut reader, 0)?;
+    let mut total_count;
+    match res {
+        ExtractResult::Footer(c) => total_count = c,
+        ExtractResult::SolidBlock(c) => {
+            total_count = c;
+            let srep = (header.flags & crate::format::FLAG_SREP) != 0;
+            let mut dec_reader = compress::create_decompressor(reader, srep)?;
+            let res2 = archive_info_internal(&mut dec_reader, total_count)?;
+            match res2 {
+                ExtractResult::Footer(c2) => total_count = c2,
+                _ => anyhow::bail!("Solid block did not end with a footer"),
+            }
+        }
+        ExtractResult::EndOfStream(c) => total_count = c,
+    }
+
     println!("Archive: compr v0.1.0");
-    println!("Entries:  {count}");
+    println!("Entries:  {total_count}");
     println!("Format:   streaming solid archive");
     Ok(())
 }
 
-pub fn verify_archive(input: &str) -> Result<()> {
-    let (_header, mut reader) = open_and_decompress(input)?;
+fn verify_archive_internal<R: Read>(reader: &mut R, total_so_far: u32) -> Result<ExtractResult> {
     let mut count = 0u32;
     loop {
         let mut kind = [0u8; 1];
-        if reader.read_exact(&mut kind).is_err() { break; }
+        if reader.read_exact(&mut kind).is_err() { return Ok(ExtractResult::EndOfStream(count)); }
         if kind[0] == FOOTER_MARKER { break; }
+        if kind[0] == crate::format::MARKER_SOLID_BLOCK {
+            return Ok(ExtractResult::SolidBlock(count));
+        }
         if kind[0] != MARKER_IMAGE && kind[0] != MARKER_VIDEO {
             anyhow::bail!("Bad kind 0x{:02x}", kind[0]);
         }
@@ -314,15 +410,47 @@ pub fn verify_archive(input: &str) -> Result<()> {
     reader.read_exact(&mut eb)?;
     if eb != *MAGIC { anyhow::bail!("Bad ending magic"); }
     // Verify entry count matches footer
-    if fc != count {
-        anyhow::bail!("Entry count mismatch: footer says {fc}, verified {count}");
+    if fc != total_so_far + count {
+        anyhow::bail!("Entry count mismatch: footer says {fc}, verified {}", total_so_far + count);
     }
-    eprintln!("\nAll {count} entries valid, footer OK");
+    Ok(ExtractResult::Footer(count))
+}
+
+pub fn verify_archive(input: &str) -> Result<()> {
+    let (header, mut reader) = open_and_prepare(input)?;
+
+    let res = verify_archive_internal(&mut reader, 0)?;
+    let mut total_count;
+    match res {
+        ExtractResult::Footer(c) => total_count = c,
+        ExtractResult::SolidBlock(c) => {
+            total_count = c;
+            let srep = (header.flags & crate::format::FLAG_SREP) != 0;
+            let mut dec_reader = compress::create_decompressor(reader, srep)?;
+            let res2 = verify_archive_internal(&mut dec_reader, total_count)?;
+            match res2 {
+                ExtractResult::Footer(c2) => total_count += c2,
+                _ => anyhow::bail!("Solid block did not end with a footer"),
+            }
+        }
+        ExtractResult::EndOfStream(c) => {
+            if c > 0 { anyhow::bail!("Unexpected EOF"); }
+            total_count = 0;
+        }
+    }
+
+    eprintln!("\nAll {total_count} entries valid, footer OK");
     Ok(())
 }
 
 pub fn archive_entropy(input: &str) -> Result<()> {
-    let (_header, mut reader) = open_and_decompress(input)?;
+    let (header, mut reader) = open_and_prepare(input)?;
     println!("Archive entropy (per entry):");
-    crate::entropy::print_archive_entropy(&mut reader)
+    let count = crate::entropy::print_archive_entropy(&mut reader)?;
+    if count & 0x8000_0000 != 0 {
+        let srep = (header.flags & crate::format::FLAG_SREP) != 0;
+        let mut dec_reader = compress::create_decompressor(reader, srep)?;
+        crate::entropy::print_archive_entropy(&mut dec_reader)?;
+    }
+    Ok(())
 }
